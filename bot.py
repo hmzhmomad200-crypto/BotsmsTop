@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# Telegram OTP Bot - Free Version (No balance, no referrals)
-# Fully compatible with Railway.com - Single file
+# Telegram OTP Bot - Advanced Version with Admin Panel, File Upload, and Number Management
 
 import os
 import sqlite3
@@ -27,7 +26,7 @@ admin_ids_str = os.getenv("ADMIN_IDS", "")
 if admin_ids_str:
     ADMIN_IDS = [int(x.strip()) for x in admin_ids_str.split(",") if x.strip()]
 
-# IVASMS credentials (prefer email/password over cookies)
+# IVASMS credentials
 IVASMS_EMAIL = os.getenv("IVASMS_EMAIL", "")
 IVASMS_PASSWORD = os.getenv("IVASMS_PASSWORD", "")
 IVASMS_COOKIES = os.getenv("IVASMS_COOKIES", "")
@@ -45,7 +44,7 @@ CAPTCHA_EXPIRE_MINUTES = 5
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== DATABASE FUNCTIONS ==========
+# ========== DATABASE FUNCTIONS (same as before) ==========
 def init_db():
     os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
@@ -62,6 +61,7 @@ def init_db():
         user_id INTEGER PRIMARY KEY,
         number TEXT,
         service TEXT,
+        country TEXT,
         expires_at TIMESTAMP
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS used_numbers_temp (
@@ -73,6 +73,7 @@ def init_db():
         user_id INTEGER,
         number TEXT,
         service TEXT,
+        country TEXT,
         otp TEXT,
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
@@ -147,26 +148,26 @@ def set_captcha_solved(user_id):
     conn.commit()
     conn.close()
 
-def set_active_number(user_id, number, service, expire_minutes=NUMBER_EXPIRE_MINUTES):
+def set_active_number(user_id, number, service, country, expire_minutes=NUMBER_EXPIRE_MINUTES):
     conn = get_db()
     c = conn.cursor()
     expires_at = (datetime.now() + timedelta(minutes=expire_minutes)).isoformat()
-    c.execute('REPLACE INTO active_numbers (user_id, number, service, expires_at) VALUES (?, ?, ?, ?)',
-              (user_id, number, service, expires_at))
+    c.execute('REPLACE INTO active_numbers (user_id, number, service, country, expires_at) VALUES (?, ?, ?, ?, ?)',
+              (user_id, number, service, country, expires_at))
     conn.commit()
     conn.close()
 
 def get_active_number(user_id):
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT number, service, expires_at FROM active_numbers WHERE user_id = ?', (user_id,))
+    c.execute('SELECT number, service, country, expires_at FROM active_numbers WHERE user_id = ?', (user_id,))
     row = c.fetchone()
     conn.close()
     if row and datetime.now() < datetime.fromisoformat(row['expires_at']):
-        return row['number'], row['service'], datetime.fromisoformat(row['expires_at'])
+        return row['number'], row['service'], row['country'], datetime.fromisoformat(row['expires_at'])
     else:
         clear_active_number(user_id)
-        return None, None, None
+        return None, None, None, None
 
 def clear_active_number(user_id):
     conn = get_db()
@@ -193,18 +194,18 @@ def is_number_temp_used(number):
         return True
     return False
 
-def add_otp_log(user_id, number, service, otp):
+def add_otp_log(user_id, number, service, country, otp):
     conn = get_db()
     c = conn.cursor()
-    c.execute('INSERT INTO otp_logs (user_id, number, service, otp) VALUES (?, ?, ?, ?)',
-              (user_id, number, service, otp))
+    c.execute('INSERT INTO otp_logs (user_id, number, service, country, otp) VALUES (?, ?, ?, ?, ?)',
+              (user_id, number, service, country, otp))
     conn.commit()
     conn.close()
 
 def get_user_otp_history(user_id, limit=10):
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT number, service, otp, timestamp FROM otp_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?',
+    c.execute('SELECT number, service, country, otp, timestamp FROM otp_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?',
               (user_id, limit))
     rows = c.fetchall()
     conn.close()
@@ -245,7 +246,7 @@ def get_ticket_user(ticket_id):
 def get_all_active_numbers():
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT user_id, number, service FROM active_numbers')
+    c.execute('SELECT user_id, number, service, country FROM active_numbers')
     rows = c.fetchall()
     conn.close()
     return rows
@@ -281,24 +282,48 @@ def is_admin(user_id):
     return user_id in ADMIN_IDS
 
 def load_numbers():
+    """Returns list of [number, service, country]"""
     try:
         with open(NUMBERS_FILE, 'r') as f:
             lines = [line.strip() for line in f if line.strip()]
-            return [line.split(',') for line in lines if len(line.split(',')) == 3]
+            result = []
+            for line in lines:
+                parts = line.split(',')
+                if len(parts) == 3:
+                    result.append([parts[0].strip(), parts[1].strip(), parts[2].strip()])
+            return result
     except:
         return []
 
+def save_numbers(numbers_list):
+    """Save list of [number, service, country] to file"""
+    with open(NUMBERS_FILE, 'w') as f:
+        for num, serv, country in numbers_list:
+            f.write(f"{num},{serv},{country}\n")
+
+def append_numbers_from_file(file_content):
+    """Parse uploaded file content and append to numbers.txt"""
+    lines = file_content.decode('utf-8').splitlines()
+    new_entries = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(',')
+        if len(parts) == 3:
+            new_entries.append([parts[0].strip(), parts[1].strip(), parts[2].strip()])
+    if not new_entries:
+        return 0
+    current = load_numbers()
+    current.extend(new_entries)
+    save_numbers(current)
+    return len(new_entries)
+
 def remove_number_from_file(number):
-    lines = []
-    try:
-        with open(NUMBERS_FILE, 'r') as f:
-            lines = f.readlines()
-        with open(NUMBERS_FILE, 'w') as f:
-            for line in lines:
-                if not line.startswith(number + ','):
-                    f.write(line)
-    except:
-        pass
+    """Remove a specific number from numbers.txt"""
+    numbers = load_numbers()
+    new_numbers = [n for n in numbers if n[0] != number]
+    save_numbers(new_numbers)
 
 async def is_subscribed(user_id, bot):
     if not REQUIRED_CHANNEL:
@@ -317,7 +342,6 @@ def fetch_otp_for_number(target_phone):
             if '=' in cookie_pair:
                 name, value = cookie_pair.strip().split('=', 1)
                 session.cookies.set(name, value)
-    # If we have email/password, we could implement login; but cookies are easier
     try:
         resp = session.get('https://www.ivasms.com/portal/sms/received', timeout=15)
         if resp.status_code != 200:
@@ -357,12 +381,12 @@ texts = {
         'choose_service': "📱 اختر الخدمة:",
         'number_assigned': "✅ تم اختيار الرقم بنجاح!\n\n🌍 الدولة: {country}\n📱 الخدمة: {service}\n📞 الرقم: `{number}`\n\n⏳ ينتهي خلال {minutes} دقيقة",
         'no_active': "ℹ️ ليس لديك رقم نشط. استخدم 'احصل على رقم'",
-        'active_number_info': "📞 رقمك النشط: `{number}`\n📱 الخدمة: {service}\n⏳ متبقي: {time_left}\n\nاستخدم /renew لتمديد الصلاحية مجاناً.",
+        'active_number_info': "📞 رقمك النشط: `{number}`\n📱 الخدمة: {service}\n🌍 الدولة: {country}\n⏳ متبقي: {time_left}\n\nاستخدم /renew لتمديد الصلاحية مجاناً.",
         'released': "✅ تم تحرير رقمك بنجاح.",
         'renew_success': "✅ تم تجديد رقمك لمدة {minutes} دقيقة.",
         'history_empty': "📭 ليس لديك سجل OTP حتى الآن.",
         'history_format': "📜 **آخر {limit} أكواد OTP:**\n\n",
-        'history_line': "• `{otp}` – {service} – {number}\n   _{time}_\n",
+        'history_line': "• `{otp}` – {service} – {number} ({country})\n   _{time}_\n",
         'services_list': "📋 **الخدمات المتاحة حالياً:**\n",
         'lang_changed': "✅ تم تغيير اللغة إلى العربية.",
         'ticket_created': "✅ تم فتح تذكرة دعم برقم #{id}. سيرد عليك الأدمن قريباً.",
@@ -374,7 +398,15 @@ texts = {
         'coupon_invalid': "❌ كوبون غير صالح أو منتهي الصلاحية.",
         'coupon_format': "❗ استخدم: /redeem رمز_الكوبون",
         'export_sent': "✅ تم تصدير بياناتك. سيتم إرسال الملف الآن.",
-        'admin_list': "👥 **قائمة الأدمن الحاليين:**\n",
+        'admin_panel': "🔧 لوحة تحكم الأدمن",
+        'admin_stats_text': "📊 الإحصائيات",
+        'admin_upload': "📂 رفع ملف أرقام",
+        'admin_list': "👥 قائمة الأدمن",
+        'admin_broadcast': "📢 إرسال جماعي",
+        'admin_export': "💾 تصدير كل البيانات",
+        'admin_coupon': "🎫 إضافة كوبون",
+        'file_received': "✅ تم استلام الملف بنجاح. تم إضافة {count} رقم جديد.",
+        'file_invalid': "❌ الملف غير صالح. تأكد من أن كل سطر يحتوي على: رقم,خدمة,دولة",
     },
     'en': {
         'start_captcha': "Welcome! To prove you're human, enter the following code within 5 minutes:\n\n`{code}`",
@@ -393,12 +425,12 @@ texts = {
         'choose_service': "📱 Choose service:",
         'number_assigned': "✅ Number assigned!\n\n🌍 Country: {country}\n📱 Service: {service}\n📞 Number: `{number}`\n\n⏳ Expires in {minutes} minutes",
         'no_active': "ℹ️ You don't have an active number. Use 'Get Number'.",
-        'active_number_info': "📞 Your active number: `{number}`\n📱 Service: {service}\n⏳ Time left: {time_left}\n\nUse /renew to extend for free.",
+        'active_number_info': "📞 Your active number: `{number}`\n📱 Service: {service}\n🌍 Country: {country}\n⏳ Time left: {time_left}\n\nUse /renew to extend for free.",
         'released': "✅ Number released successfully.",
         'renew_success': "✅ Number renewed for {minutes} minutes.",
         'history_empty': "📭 No OTP history yet.",
         'history_format': "📜 **Last {limit} OTPs:**\n\n",
-        'history_line': "• `{otp}` – {service} – {number}\n   _{time}_\n",
+        'history_line': "• `{otp}` – {service} – {number} ({country})\n   _{time}_\n",
         'services_list': "📋 **Currently available services:**\n",
         'lang_changed': "✅ Language changed to English.",
         'ticket_created': "✅ Support ticket #{id} opened. Admin will reply soon.",
@@ -410,7 +442,15 @@ texts = {
         'coupon_invalid': "❌ Invalid or expired coupon.",
         'coupon_format': "❗ Usage: /redeem <coupon_code>",
         'export_sent': "✅ Your data has been exported. The file will be sent now.",
-        'admin_list': "👥 **Current admin list:**\n",
+        'admin_panel': "🔧 Admin Panel",
+        'admin_stats_text': "📊 Statistics",
+        'admin_upload': "📂 Upload Numbers File",
+        'admin_list': "👥 Admin List",
+        'admin_broadcast': "📢 Broadcast",
+        'admin_export': "💾 Export All Data",
+        'admin_coupon': "🎫 Add Coupon",
+        'file_received': "✅ File received. {count} new numbers added.",
+        'file_invalid': "❌ Invalid file format. Each line must be: number,service,country",
     }
 }
 
@@ -443,6 +483,8 @@ async def show_main_menu(message, user_id):
         [InlineKeyboardButton(get_text(user_id, 'language'), callback_data="language")],
         [InlineKeyboardButton(get_text(user_id, 'support'), callback_data="support")],
     ]
+    if is_admin(user_id):
+        keyboard.append([InlineKeyboardButton("🔧 لوحة الأدمن", callback_data="admin_panel")])
     await message.reply_text(get_text(user_id, 'main_menu'), reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def captcha_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -467,6 +509,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not numbers:
             await query.edit_message_text(get_text(user_id, 'no_numbers'))
             return
+        # Extract unique countries
         countries = {}
         for _, _, c in numbers:
             countries[c] = c
@@ -475,7 +518,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(get_text(user_id, 'choose_country'), reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("country_"):
-        country = data.split('_')[1]
+        country = data.split('_', 1)[1]
         numbers = load_numbers()
         services = set()
         for _, s, c in numbers:
@@ -486,11 +529,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(get_text(user_id, 'choose_service'), reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("service_"):
+        # Format: service_{country}_{service}
         parts = data.split('_', 2)
+        if len(parts) < 3:
+            return
         country = parts[1]
         service = parts[2]
         numbers = load_numbers()
-        # Get used numbers from active and temp
+        # Get used numbers
         used = set()
         conn = get_db()
         c = conn.cursor()
@@ -509,7 +555,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not selected:
             await query.edit_message_text(get_text(user_id, 'no_numbers'))
             return
-        set_active_number(user_id, selected, service)
+        set_active_number(user_id, selected, service, country)
         remove_number_from_file(selected)
         add_used_number_temp(selected, hours=24)
         await query.edit_message_text(
@@ -518,14 +564,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "my_number":
-        number, service, expires = get_active_number(user_id)
+        number, service, country, expires = get_active_number(user_id)
         if number:
             remaining = expires - datetime.now()
             minutes = remaining.seconds // 60
             seconds = remaining.seconds % 60
             time_left = f"{minutes} دقيقة {seconds} ثانية" if lang=='ar' else f"{minutes} min {seconds} sec"
             await query.edit_message_text(
-                get_text(user_id, 'active_number_info', number=number, service=service, time_left=time_left),
+                get_text(user_id, 'active_number_info', number=number, service=service, country=country, time_left=time_left),
                 parse_mode='Markdown'
             )
         else:
@@ -536,7 +582,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(get_text(user_id, 'released'))
 
     elif data == "renew":
-        number, service, expires = get_active_number(user_id)
+        number, service, country, expires = get_active_number(user_id)
         if not number:
             await query.edit_message_text(get_text(user_id, 'no_active'))
             return
@@ -556,7 +602,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = get_text(user_id, 'history_format', limit=10)
         for row in history:
             time_str = row['timestamp'][:16].replace('T', ' ')
-            msg += get_text(user_id, 'history_line', otp=row['otp'], service=row['service'], number=row['number'], time=time_str)
+            msg += get_text(user_id, 'history_line', otp=row['otp'], service=row['service'], number=row['number'], country=row['country'], time=time_str)
         await query.edit_message_text(msg, parse_mode='Markdown')
 
     elif data == "services":
@@ -585,6 +631,62 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['support_mode'] = True
         await query.edit_message_text(get_text(user_id, 'support_instruction'))
 
+    elif data == "admin_panel" and is_admin(user_id):
+        keyboard = [
+            [InlineKeyboardButton(get_text(user_id, 'admin_stats_text'), callback_data="admin_stats")],
+            [InlineKeyboardButton(get_text(user_id, 'admin_upload'), callback_data="admin_upload")],
+            [InlineKeyboardButton(get_text(user_id, 'admin_list'), callback_data="admin_list")],
+            [InlineKeyboardButton(get_text(user_id, 'admin_broadcast'), callback_data="admin_broadcast")],
+            [InlineKeyboardButton(get_text(user_id, 'admin_export'), callback_data="admin_export")],
+            [InlineKeyboardButton(get_text(user_id, 'admin_coupon'), callback_data="admin_coupon")],
+            [InlineKeyboardButton("🔙", callback_data="main_menu")]
+        ]
+        await query.edit_message_text(get_text(user_id, 'admin_panel'), reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data == "admin_stats" and is_admin(user_id):
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM users')
+        total_users = c.fetchone()[0]
+        c.execute('SELECT COUNT(*) FROM active_numbers')
+        active_numbers = c.fetchone()[0]
+        c.execute('SELECT COUNT(*) FROM otp_logs')
+        total_otps = c.fetchone()[0]
+        c.execute('SELECT COUNT(*) FROM tickets WHERE status="open"')
+        open_tickets = c.fetchone()[0]
+        conn.close()
+        text = (f"📊 **Statistics**\n👥 Users: {total_users}\n🔢 Active numbers: {active_numbers}\n🔐 Total OTPs: {total_otps}\n🎫 Open tickets: {open_tickets}")
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin_panel")]]))
+
+    elif data == "admin_list" and is_admin(user_id):
+        admins = ADMIN_IDS
+        msg = get_text(user_id, 'admin_list') + "\n".join(f"• `{a}`" for a in admins)
+        await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin_panel")]]))
+
+    elif data == "admin_broadcast" and is_admin(user_id):
+        context.user_data['broadcast_mode'] = True
+        await query.edit_message_text("📢 أرسل الرسالة التي تريد بثها لجميع المستخدمين:")
+
+    elif data == "admin_export" and is_admin(user_id):
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT * FROM users')
+        users = c.fetchall()
+        c.execute('SELECT * FROM otp_logs')
+        logs = c.fetchall()
+        conn.close()
+        export_data = {"users": [dict(u) for u in users], "otp_logs": [dict(l) for l in logs]}
+        filename = "all_data.json"
+        with open(filename, "w") as f:
+            json.dump(export_data, f, indent=2, default=str)
+        await query.message.reply_document(document=open(filename, "rb"), filename="all_data.json")
+        os.remove(filename)
+        await query.edit_message_text("✅ تم تصدير البيانات.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin_panel")]]))
+
+    elif data == "admin_coupon" and is_admin(user_id):
+        context.user_data['add_coupon_mode'] = True
+        await query.edit_message_text("🎫 أرسل الكوبون بالصيغة:\n`كود,عدد_الاستخدامات`\nمثال: `SAVE10,100`", parse_mode='Markdown')
+
     elif data == "main_menu":
         await show_main_menu(query.message, user_id)
 
@@ -604,9 +706,62 @@ async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_T
                 pass
         context.user_data['support_mode'] = False
 
+async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if context.user_data.get('broadcast_mode') and is_admin(user_id):
+        msg = update.message.text
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT user_id FROM users')
+        users = c.fetchall()
+        conn.close()
+        sent = 0
+        for row in users:
+            try:
+                await context.bot.send_message(row['user_id'], f"📢 Announcement:\n{msg}")
+                sent += 1
+            except:
+                pass
+        await update.message.reply_text(f"✅ Broadcast sent to {sent} users.")
+        context.user_data['broadcast_mode'] = False
+
+async def handle_add_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if context.user_data.get('add_coupon_mode') and is_admin(user_id):
+        text = update.message.text.strip()
+        if ',' not in text:
+            await update.message.reply_text("❌ الصيغة غير صحيحة. استخدم: كود,عدد_الاستخدامات")
+            return
+        code, uses_str = text.split(',', 1)
+        try:
+            uses = int(uses_str.strip())
+        except:
+            await update.message.reply_text("❌ عدد الاستخدامات يجب أن يكون رقماً.")
+            return
+        add_coupon(code.strip(), uses)
+        await update.message.reply_text(f"✅ تم إضافة الكوبون `{code}` بعدد {uses} استخدامات.", parse_mode='Markdown')
+        context.user_data['add_coupon_mode'] = False
+
+async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ فقط الأدمن يمكنه رفع الملفات.")
+        return
+    document = update.message.document
+    if not document.file_name.endswith('.txt'):
+        await update.message.reply_text("❌ يرجى رفع ملف نصي بصيغة `.txt`")
+        return
+    file = await document.get_file()
+    file_content = await file.download_as_bytearray()
+    count = append_numbers_from_file(file_content)
+    if count > 0:
+        await update.message.reply_text(get_text(user_id, 'file_received', count=count))
+    else:
+        await update.message.reply_text(get_text(user_id, 'file_invalid'))
+
 async def my_number_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    number, service, expires = get_active_number(user_id)
+    number, service, country, expires = get_active_number(user_id)
     lang = get_user_lang(user_id)
     if number:
         remaining = expires - datetime.now()
@@ -614,7 +769,7 @@ async def my_number_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         seconds = remaining.seconds % 60
         time_left = f"{minutes} دقيقة {seconds} ثانية" if lang=='ar' else f"{minutes} min {seconds} sec"
         await update.message.reply_text(
-            get_text(user_id, 'active_number_info', number=number, service=service, time_left=time_left),
+            get_text(user_id, 'active_number_info', number=number, service=service, country=country, time_left=time_left),
             parse_mode='Markdown'
         )
     else:
@@ -627,7 +782,7 @@ async def release_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def renew_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    number, service, expires = get_active_number(user_id)
+    number, service, country, expires = get_active_number(user_id)
     if not number:
         await update.message.reply_text(get_text(user_id, 'no_active'))
         return
@@ -648,7 +803,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = get_text(user_id, 'history_format', limit=10)
     for row in history:
         time_str = row['timestamp'][:16].replace('T', ' ')
-        msg += get_text(user_id, 'history_line', otp=row['otp'], service=row['service'], number=row['number'], time=time_str)
+        msg += get_text(user_id, 'history_line', otp=row['otp'], service=row['service'], number=row['number'], country=row['country'], time=time_str)
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -676,7 +831,7 @@ async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     code = args[0]
     if use_coupon(code, user_id):
-        number, service, expires = get_active_number(user_id)
+        number, service, country, expires = get_active_number(user_id)
         if number:
             new_expiry = datetime.now() + timedelta(minutes=NUMBER_EXPIRE_MINUTES)
             conn = get_db()
@@ -706,137 +861,12 @@ async def export_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "created_at": user_row['created_at'],
         "otp_history": [dict(log) for log in logs]
     }
-    import json
     filename = f"export_{user_id}.json"
     with open(filename, "w") as f:
         json.dump(data, f, indent=2, default=str)
     await update.message.reply_document(document=open(filename, "rb"), filename=f"user_{user_id}_data.json")
     os.remove(filename)
     await update.message.reply_text(get_text(user_id, 'export_sent'))
-
-# ========== ADMIN COMMANDS ==========
-async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM users')
-    total_users = c.fetchone()[0]
-    c.execute('SELECT COUNT(*) FROM active_numbers')
-    active_numbers = c.fetchone()[0]
-    c.execute('SELECT COUNT(*) FROM otp_logs')
-    total_otps = c.fetchone()[0]
-    c.execute('SELECT COUNT(*) FROM tickets WHERE status="open"')
-    open_tickets = c.fetchone()[0]
-    conn.close()
-    await update.message.reply_text(
-        f"📊 **Bot Statistics**\n👥 Users: {total_users}\n🔢 Active numbers: {active_numbers}\n🔐 Total OTPs: {total_otps}\n🎫 Open tickets: {open_tickets}",
-        parse_mode='Markdown'
-    )
-
-async def top_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('SELECT user_id, COUNT(*) as cnt FROM otp_logs GROUP BY user_id ORDER BY cnt DESC LIMIT 10')
-    rows = c.fetchall()
-    conn.close()
-    if not rows:
-        await update.message.reply_text("No OTPs yet.")
-        return
-    msg = "🏆 **Top 10 users by OTPs:**\n"
-    for i, row in enumerate(rows, 1):
-        msg += f"{i}. User {row['user_id']} – {row['cnt']} OTPs\n"
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
-async def tickets_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    tickets = get_open_tickets()
-    if not tickets:
-        await update.message.reply_text("No open tickets.")
-        return
-    msg = "🎫 **Open Tickets:**\n"
-    for t in tickets:
-        msg += f"ID {t['id']} – User {t['user_id']} – {t['created_at'][:16]}\n{t['message'][:50]}...\n\n"
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
-async def reply_ticket_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("❗ Usage: /reply_ticket <ticket_id> <reply>")
-        return
-    try:
-        ticket_id = int(args[0])
-    except:
-        await update.message.reply_text("Ticket ID must be a number.")
-        return
-    reply_text = ' '.join(args[1:])
-    user_id = get_ticket_user(ticket_id)
-    if user_id:
-        reply_ticket(ticket_id, reply_text)
-        await context.bot.send_message(user_id, get_text(user_id, 'ticket_reply', id=ticket_id, reply=reply_text))
-        await update.message.reply_text(f"✅ Replied to ticket #{ticket_id}")
-    else:
-        await update.message.reply_text("Ticket not found.")
-
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    msg = ' '.join(context.args)
-    if not msg:
-        await update.message.reply_text("❗ /broadcast <message>")
-        return
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('SELECT user_id FROM users')
-    users = c.fetchall()
-    conn.close()
-    sent = 0
-    for row in users:
-        try:
-            await context.bot.send_message(row['user_id'], f"📢 Announcement:\n{msg}")
-            sent += 1
-        except:
-            pass
-    await update.message.reply_text(f"✅ Sent to {sent} users.")
-
-async def export_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('SELECT * FROM users')
-    users = c.fetchall()
-    c.execute('SELECT * FROM otp_logs')
-    logs = c.fetchall()
-    conn.close()
-    data = {"users": [dict(u) for u in users], "otp_logs": [dict(l) for l in logs]}
-    import json
-    filename = "all_data.json"
-    with open(filename, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-    await update.message.reply_document(document=open(filename, "rb"), filename="all_data.json")
-    os.remove(filename)
-
-async def add_coupon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("❗ /add_coupon <code> <uses>")
-        return
-    code = args[0]
-    try:
-        uses = int(args[1])
-    except:
-        await update.message.reply_text("Uses must be a number.")
-        return
-    add_coupon(code, uses)
-    await update.message.reply_text(f"✅ Added coupon {code} with {uses} uses.")
-
-async def admin_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    user_id = update.effective_user.id
-    admins = ADMIN_IDS
-    msg = get_text(user_id, 'admin_list') + "\n".join(f"• `{a}`" for a in admins)
-    await update.message.reply_text(msg, parse_mode='Markdown')
 
 # ========== BACKGROUND OTP MONITOR ==========
 async def otp_monitor(app: Application):
@@ -847,12 +877,13 @@ async def otp_monitor(app: Application):
                 user_id = row['user_id']
                 number = row['number']
                 service = row['service']
+                country = row['country']
                 otp = fetch_otp_for_number(number)
                 if otp:
-                    await app.bot.send_message(user_id, f"🔐 **New OTP!**\n📞 Number: `{number}`\n🔢 Code: `{otp}`", parse_mode='Markdown')
+                    await app.bot.send_message(user_id, f"🔐 **New OTP!**\n📞 Number: `{number}`\n📱 Service: {service}\n🌍 Country: {country}\n🔢 Code: `{otp}`", parse_mode='Markdown')
                     if REQUIRED_CHANNEL:
-                        await app.bot.send_message(REQUIRED_CHANNEL, f"🔐 OTP for {number}: `{otp}`", parse_mode='Markdown')
-                    add_otp_log(user_id, number, service, otp)
+                        await app.bot.send_message(REQUIRED_CHANNEL, f"🔐 OTP for {number} ({service} - {country}): `{otp}`", parse_mode='Markdown')
+                    add_otp_log(user_id, number, service, country, otp)
                     clear_active_number(user_id)
         except Exception as e:
             logger.error(f"Monitor error: {e}")
@@ -879,23 +910,16 @@ def main():
     app.add_handler(CommandHandler("language", language_command))
     app.add_handler(CommandHandler("redeem", redeem_command))
     app.add_handler(CommandHandler("export_data", export_data_command))
-    app.add_handler(CommandHandler("stats", admin_stats))
-    app.add_handler(CommandHandler("top_users", top_users))
-    app.add_handler(CommandHandler("tickets", tickets_list))
-    app.add_handler(CommandHandler("reply_ticket", reply_ticket_command))
-    app.add_handler(CommandHandler("broadcast", broadcast_command))
-    app.add_handler(CommandHandler("export_all", export_all_users))
-    app.add_handler(CommandHandler("add_coupon", add_coupon_command))
-    app.add_handler(CommandHandler("admin_list", admin_list_command))
 
     # Callback and message handlers
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, captcha_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_support_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_coupon))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file_upload))
 
-    # Start background monitor inside the same event loop
-    async def startup():
-        asyncio.create_task(otp_monitor(app))
+    # Start background monitor
     loop = asyncio.get_event_loop()
     loop.create_task(otp_monitor(app))
 
