@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Telegram OTP Bot - Free Version (No balance, no referrals)
-# Admins are defined directly inside the bot (no external file)
+# Fully compatible with Railway.com - Single file
 
 import os
 import sqlite3
@@ -16,23 +16,28 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 import requests
 from bs4 import BeautifulSoup
 
-# ========== CONFIGURATION (EDIT THESE) ==========
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-REQUIRED_CHANNEL = ""               # e.g., "@my_channel" or leave empty
-BASE_URL = "https://your-domain.com"  # for coupon links (optional)
+# ========== CONFIGURATION FROM ENVIRONMENT ==========
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "")
+BASE_URL = os.getenv("BASE_URL", "https://your-domain.com")
 
-# ========== ADMINS (add your Telegram user IDs here) ==========
-ADMIN_IDS = [123456789, 987654321]   # استبدل بالأرقام الحقيقية
+# Admins: comma-separated IDs from environment variable
+ADMIN_IDS = []
+admin_ids_str = os.getenv("ADMIN_IDS", "")
+if admin_ids_str:
+    ADMIN_IDS = [int(x.strip()) for x in admin_ids_str.split(",") if x.strip()]
 
-# ========== IVASMS Cookies (must be valid) ==========
-IVASMS_COOKIES = "XSRF-TOKEN=...; ivas_sms_session=...; cf_clearance=..."
+# IVASMS credentials (prefer email/password over cookies)
+IVASMS_EMAIL = os.getenv("IVASMS_EMAIL", "")
+IVASMS_PASSWORD = os.getenv("IVASMS_PASSWORD", "")
+IVASMS_COOKIES = os.getenv("IVASMS_COOKIES", "")
 
-# ========== FILES ==========
+# Files
 NUMBERS_FILE = "numbers.txt"
 COUPONS_FILE = "coupons.json"
 DB_FILE = "data/bot.db"
 
-# ========== TIMINGS ==========
+# Timings
 NUMBER_EXPIRE_MINUTES = 10
 CAPTCHA_EXPIRE_MINUTES = 5
 
@@ -40,7 +45,7 @@ CAPTCHA_EXPIRE_MINUTES = 5
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== DATABASE FUNCTIONS (unchanged) ==========
+# ========== DATABASE FUNCTIONS ==========
 def init_db():
     os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
@@ -273,11 +278,9 @@ def add_coupon(code, uses):
 
 # ========== UTILITIES ==========
 def is_admin(user_id):
-    """Check if a user ID is in the admin list."""
     return user_id in ADMIN_IDS
 
 def load_numbers():
-    """Returns list of [number, service, country]"""
     try:
         with open(NUMBERS_FILE, 'r') as f:
             lines = [line.strip() for line in f if line.strip()]
@@ -307,14 +310,14 @@ async def is_subscribed(user_id, bot):
         return False
 
 def fetch_otp_for_number(target_phone):
-    if not IVASMS_COOKIES:
-        return None
     session = requests.Session()
     session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-    for cookie_pair in IVASMS_COOKIES.split(';'):
-        if '=' in cookie_pair:
-            name, value = cookie_pair.strip().split('=', 1)
-            session.cookies.set(name, value)
+    if IVASMS_COOKIES:
+        for cookie_pair in IVASMS_COOKIES.split(';'):
+            if '=' in cookie_pair:
+                name, value = cookie_pair.strip().split('=', 1)
+                session.cookies.set(name, value)
+    # If we have email/password, we could implement login; but cookies are easier
     try:
         resp = session.get('https://www.ivasms.com/portal/sms/received', timeout=15)
         if resp.status_code != 200:
@@ -422,13 +425,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     username = user.username or user.first_name
     add_user(user_id, username)
-    
     if not is_captcha_solved(user_id):
         code = ''.join(random.choices(string.digits, k=6))
         set_captcha(user_id, code)
         await update.message.reply_text(get_text(user_id, 'start_captcha', code=code), parse_mode='Markdown')
         return
-    
     await show_main_menu(update.message, user_id)
 
 async def show_main_menu(message, user_id):
@@ -460,7 +461,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
     lang = get_user_lang(user_id)
-    
+
     if data == "get_number":
         numbers = load_numbers()
         if not numbers:
@@ -472,6 +473,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton(c, callback_data=f"country_{c}")] for c in countries.keys()]
         keyboard.append([InlineKeyboardButton(get_text(user_id, 'main_menu'), callback_data="main_menu")])
         await query.edit_message_text(get_text(user_id, 'choose_country'), reply_markup=InlineKeyboardMarkup(keyboard))
+
     elif data.startswith("country_"):
         country = data.split('_')[1]
         numbers = load_numbers()
@@ -482,12 +484,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton(s, callback_data=f"service_{country}_{s}")] for s in services]
         keyboard.append([InlineKeyboardButton("🔙", callback_data="get_number")])
         await query.edit_message_text(get_text(user_id, 'choose_service'), reply_markup=InlineKeyboardMarkup(keyboard))
+
     elif data.startswith("service_"):
         parts = data.split('_', 2)
         country = parts[1]
         service = parts[2]
         numbers = load_numbers()
-        active_numbers = get_all_active_numbers()
+        # Get used numbers from active and temp
         used = set()
         conn = get_db()
         c = conn.cursor()
@@ -513,6 +516,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_text(user_id, 'number_assigned', country=country, service=service, number=selected, minutes=NUMBER_EXPIRE_MINUTES),
             parse_mode='Markdown'
         )
+
     elif data == "my_number":
         number, service, expires = get_active_number(user_id)
         if number:
@@ -526,9 +530,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await query.edit_message_text(get_text(user_id, 'no_active'))
+
     elif data == "release":
         clear_active_number(user_id)
         await query.edit_message_text(get_text(user_id, 'released'))
+
     elif data == "renew":
         number, service, expires = get_active_number(user_id)
         if not number:
@@ -541,6 +547,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         conn.close()
         await query.edit_message_text(get_text(user_id, 'renew_success', minutes=NUMBER_EXPIRE_MINUTES))
+
     elif data == "history":
         history = get_user_otp_history(user_id, 10)
         if not history:
@@ -551,6 +558,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             time_str = row['timestamp'][:16].replace('T', ' ')
             msg += get_text(user_id, 'history_line', otp=row['otp'], service=row['service'], number=row['number'], time=time_str)
         await query.edit_message_text(msg, parse_mode='Markdown')
+
     elif data == "services":
         numbers = load_numbers()
         services = set()
@@ -558,6 +566,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             services.add(s)
         msg = get_text(user_id, 'services_list') + "\n".join(f"• {s}" for s in services)
         await query.edit_message_text(msg)
+
     elif data == "language":
         keyboard = [
             [InlineKeyboardButton("العربية", callback_data="lang_ar")],
@@ -565,14 +574,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙", callback_data="main_menu")]
         ]
         await query.edit_message_text("اختر اللغة / Choose language:", reply_markup=InlineKeyboardMarkup(keyboard))
+
     elif data.startswith("lang_"):
         new_lang = data.split('_')[1]
         set_language(user_id, new_lang)
         await query.edit_message_text(get_text(user_id, 'lang_changed'))
         await show_main_menu(query.message, user_id)
+
     elif data == "support":
         context.user_data['support_mode'] = True
         await query.edit_message_text(get_text(user_id, 'support_instruction'))
+
     elif data == "main_menu":
         await show_main_menu(query.message, user_id)
 
@@ -585,7 +597,6 @@ async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_T
             return
         ticket_id = create_ticket(user_id, msg)
         await update.message.reply_text(get_text(user_id, 'ticket_created', id=ticket_id))
-        # Notify all admins
         for admin in ADMIN_IDS:
             try:
                 await context.bot.send_message(admin, f"📩 New ticket #{ticket_id} from {user_id}:\n{msg}")
@@ -821,7 +832,6 @@ async def add_coupon_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(f"✅ Added coupon {code} with {uses} uses.")
 
 async def admin_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show list of admins (only for admins)"""
     if not is_admin(update.effective_user.id): return
     user_id = update.effective_user.id
     admins = ADMIN_IDS
@@ -856,9 +866,10 @@ def main():
     if not os.path.exists(COUPONS_FILE):
         with open(COUPONS_FILE, 'w') as f:
             json.dump({}, f)
-    
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
+
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("my_number", my_number_command))
     app.add_handler(CommandHandler("release", release_command))
@@ -875,15 +886,19 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("export_all", export_all_users))
     app.add_handler(CommandHandler("add_coupon", add_coupon_command))
-    app.add_handler(CommandHandler("admin_list", admin_list_command))   # new command
-    
+    app.add_handler(CommandHandler("admin_list", admin_list_command))
+
+    # Callback and message handlers
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, captcha_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_support_message))
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+
+    # Start background monitor inside the same event loop
+    async def startup():
+        asyncio.create_task(otp_monitor(app))
+    loop = asyncio.get_event_loop()
     loop.create_task(otp_monitor(app))
+
     print("✅ Bot is running...")
     app.run_polling()
 
