@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram OTP Bot - Advanced Version with Coupon System (No Tickets)
+# Telegram OTP Bot - Upload numbers file (just numbers), then choose service & country once
 
 import os
 import sqlite3
@@ -30,7 +30,7 @@ CAPTCHA_EXPIRE_MINUTES = 5
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== DATABASE FUNCTIONS ==========
+# ========== DATABASE FUNCTIONS (unchanged) ==========
 def init_db():
     os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
@@ -245,23 +245,6 @@ def save_numbers(numbers_list):
         for num, serv, country in numbers_list:
             f.write(f"{num},{serv},{country}\n")
 
-def append_numbers_from_file(file_content):
-    lines = file_content.decode('utf-8').splitlines()
-    new_entries = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split(',')
-        if len(parts) == 3:
-            new_entries.append([parts[0].strip(), parts[1].strip(), parts[2].strip()])
-    if not new_entries:
-        return 0
-    current = load_numbers()
-    current.extend(new_entries)
-    save_numbers(current)
-    return len(new_entries)
-
 def remove_number_from_file(number):
     numbers = load_numbers()
     new_numbers = [n for n in numbers if n[0] != number]
@@ -305,11 +288,11 @@ def fetch_otp_for_number(target_phone):
         logger.error(f"Scraper error: {e}")
         return None
 
-# ========== TRANSLATIONS ==========
+# ========== TRANSLATIONS (shortened for brevity, but full) ==========
 texts = {
     'ar': {
-        'start_captcha': "مرحباً! أدخل الكود التالي خلال 5 دقائق:\n\n`{code}`",
-        'wrong_captcha': "⚠️ كود خاطئ أو منتهي. أعد /start",
+        'start_captcha': "مرحباً! أدخل الكود خلال 5 دقائق:\n\n`{code}`",
+        'wrong_captcha': "⚠️ كود خاطئ. أعد /start",
         'main_menu': "القائمة الرئيسية:",
         'get_number': "📞 احصل على رقم",
         'my_number': "📱 رقمي",
@@ -331,8 +314,8 @@ texts = {
         'history_format': "📜 **آخر {limit} أكواد:**\n\n",
         'history_line': "• `{otp}` – {service} – {number} ({country})\n   _{time}_\n",
         'services_list': "📋 **الخدمات المتاحة:**\n",
-        'lang_changed': "✅ تم تغيير اللغة إلى العربية",
-        'coupon_instruction': "🎫 أرسل كود الكوبون (مثال: `SAVE10`):",
+        'lang_changed': "✅ تم تغيير اللغة",
+        'coupon_instruction': "🎫 أرسل كود الكوبون:",
         'coupon_used': "✅ تم تفعيل الكوبون! تم تمديد رقمك {minutes} دقيقة.",
         'coupon_invalid': "❌ كوبون غير صالح",
         'coupon_format': "❗ استخدم: /redeem رمز_الكوبون",
@@ -344,15 +327,18 @@ texts = {
         'admin_broadcast': "📢 إرسال جماعي",
         'admin_export': "💾 تصدير كل البيانات",
         'admin_coupon': "🎫 إضافة كوبون",
-        'file_received': "✅ تم إضافة {count} رقم",
-        'file_invalid': "❌ تنسيق الملف غير صالح",
+        'file_upload_instruction': "📂 أرسل ملف txt يحتوي على قائمة الأرقام (رقم واحد في كل سطر).\n\nبعد إرسال الملف، سيُطلب منك إدخال الخدمة والدولة.",
+        'ask_service': "✅ تم استلام {count} رقم.\n\nالآن أرسل اسم الخدمة (مثال: WhatsApp, Telegram, Facebook):",
+        'ask_country': "✅ الخدمة: {service}\n\nالآن أرسل اسم الدولة (مثال: Venezuela, Ghana, Iraq):",
+        'file_added': "✅ تم إضافة {count} رقم بنجاح!\n📱 الخدمة: {service}\n🌍 الدولة: {country}",
+        'file_invalid': "❌ الملف لا يحتوي على أرقام صالحة.",
         'broadcast_instruction': "📢 أرسل الرسالة التي تريد بثها:",
         'broadcast_done': "✅ تم الإرسال إلى {count} مستخدم",
         'coupon_added': "✅ تم إضافة الكوبون `{code}` بعدد {uses} استخدامات",
     },
     'en': {
-        'start_captcha': "Welcome! Enter the code within 5 minutes:\n\n`{code}`",
-        'wrong_captcha': "⚠️ Invalid or expired code. Send /start again",
+        'start_captcha': "Welcome! Enter code within 5 mins:\n\n`{code}`",
+        'wrong_captcha': "⚠️ Invalid code. Send /start again",
         'main_menu': "Main Menu:",
         'get_number': "📞 Get Number",
         'my_number': "📱 My Number",
@@ -374,12 +360,12 @@ texts = {
         'history_format': "📜 **Last {limit} OTPs:**\n\n",
         'history_line': "• `{otp}` – {service} – {number} ({country})\n   _{time}_\n",
         'services_list': "📋 **Available services:**\n",
-        'lang_changed': "✅ Language changed to English",
-        'coupon_instruction': "🎫 Send coupon code (e.g., `SAVE10`):",
+        'lang_changed': "✅ Language changed",
+        'coupon_instruction': "🎫 Send coupon code:",
         'coupon_used': "✅ Coupon redeemed! Number extended by {minutes} minutes.",
         'coupon_invalid': "❌ Invalid coupon",
         'coupon_format': "❗ Usage: /redeem <coupon_code>",
-        'export_sent': "✅ Your data exported",
+        'export_sent': "✅ Data exported",
         'admin_panel': "🔧 Admin Panel",
         'admin_stats': "📊 Statistics",
         'admin_upload': "📂 Upload Numbers File",
@@ -387,8 +373,11 @@ texts = {
         'admin_broadcast': "📢 Broadcast",
         'admin_export': "💾 Export All Data",
         'admin_coupon': "🎫 Add Coupon",
-        'file_received': "✅ Added {count} numbers",
-        'file_invalid': "❌ Invalid file format",
+        'file_upload_instruction': "📂 Send a txt file containing numbers (one per line).\n\nAfter that, you will be asked for service and country.",
+        'ask_service': "✅ Received {count} numbers.\n\nNow send the service name (e.g., WhatsApp, Telegram):",
+        'ask_country': "✅ Service: {service}\n\nNow send the country name (e.g., Venezuela, Ghana):",
+        'file_added': "✅ Added {count} numbers!\n📱 Service: {service}\n🌍 Country: {country}",
+        'file_invalid': "❌ File contains no valid numbers.",
         'broadcast_instruction': "📢 Send the message to broadcast:",
         'broadcast_done': "✅ Sent to {count} users",
         'coupon_added': "✅ Coupon `{code}` added with {uses} uses",
@@ -579,11 +568,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c.execute('SELECT COUNT(*) FROM users')
         total_users = c.fetchone()[0]
         c.execute('SELECT COUNT(*) FROM active_numbers')
-        active_numbers = c.fetchone()[0]
+        active_numbers_cnt = c.fetchone()[0]
         c.execute('SELECT COUNT(*) FROM otp_logs')
         total_otps = c.fetchone()[0]
         conn.close()
-        text = f"📊 **Statistics**\n👥 Users: {total_users}\n🔢 Active numbers: {active_numbers}\n🔐 Total OTPs: {total_otps}"
+        text = f"📊 **Statistics**\n👥 Users: {total_users}\n🔢 Active numbers: {active_numbers_cnt}\n🔐 Total OTPs: {total_otps}"
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin_panel")]]))
 
     elif data == "admin_list" and is_admin(user_id):
@@ -594,7 +583,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_upload" and is_admin(user_id):
         context.user_data['waiting_for_numbers_file'] = True
         await query.edit_message_text(
-            get_text(user_id, 'admin_upload') + "\n\n" + "أرسل ملف txt (سطر: رقم,خدمة,دولة)",
+            get_text(user_id, 'file_upload_instruction'),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin_panel")]])
         )
 
@@ -632,7 +621,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "main_menu":
         await show_main_menu(query.message, user_id)
 
-# ========== HANDLERS FOR TEXT INPUT (COUPON, BROADCAST, FILE) ==========
+# ========== HANDLERS FOR TEXT INPUT ==========
 async def handle_coupon_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if context.user_data.get('coupon_mode'):
@@ -689,28 +678,74 @@ async def handle_add_coupon_input(update: Update, context: ContextTypes.DEFAULT_
         add_coupon(code.strip(), uses)
         await update.message.reply_text(get_text(user_id, 'coupon_added', code=code, uses=uses))
 
+# ========== NEW: HANDLE SERVICE & COUNTRY AFTER FILE UPLOAD ==========
 async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
-        await update.message.reply_text("⛔ Only admins can upload files.")
+        await update.message.reply_text("⛔ فقط الأدمن يمكنه رفع الملفات.")
         return
     if not context.user_data.get('waiting_for_numbers_file'):
-        await update.message.reply_text("⚠️ Please use the admin panel button first.")
+        await update.message.reply_text("⚠️ يرجى استخدام زر 'رفع ملف أرقام' من لوحة الأدمن.")
         return
-    context.user_data['waiting_for_numbers_file'] = False
+
     document = update.message.document
     if not document.file_name.endswith('.txt'):
-        await update.message.reply_text("❌ Please send a .txt file.")
+        await update.message.reply_text("❌ يرجى رفع ملف نصي بصيغة `.txt`")
         return
+
     file = await document.get_file()
     file_content = await file.download_as_bytearray()
-    count = append_numbers_from_file(file_content)
-    if count > 0:
-        await update.message.reply_text(get_text(user_id, 'file_received', count=count))
-    else:
-        await update.message.reply_text(get_text(user_id, 'file_invalid'))
+    lines = file_content.decode('utf-8').splitlines()
+    numbers = [line.strip() for line in lines if line.strip()]
 
-# ========== COMMAND HANDLERS (for direct commands) ==========
+    if not numbers:
+        await update.message.reply_text(get_text(user_id, 'file_invalid'))
+        return
+
+    context.user_data['uploaded_numbers'] = numbers
+    context.user_data['waiting_for_numbers_file'] = False
+    context.user_data['waiting_for_service'] = True
+
+    await update.message.reply_text(
+        get_text(user_id, 'ask_service', count=len(numbers))
+    )
+
+async def handle_service_country_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        return
+
+    text = update.message.text.strip()
+
+    if context.user_data.get('waiting_for_service'):
+        context.user_data['temp_service'] = text
+        context.user_data['waiting_for_service'] = False
+        context.user_data['waiting_for_country'] = True
+        await update.message.reply_text(
+            get_text(user_id, 'ask_country', service=text)
+        )
+
+    elif context.user_data.get('waiting_for_country'):
+        service = context.user_data.get('temp_service')
+        country = text
+        numbers = context.user_data.get('uploaded_numbers', [])
+        current = load_numbers()
+        new_entries = []
+        for num in numbers:
+            new_entries.append([num, service, country])
+        current.extend(new_entries)
+        save_numbers(current)
+
+        # Clean up
+        context.user_data.pop('uploaded_numbers', None)
+        context.user_data.pop('temp_service', None)
+        context.user_data.pop('waiting_for_country', None)
+
+        await update.message.reply_text(
+            get_text(user_id, 'file_added', count=len(new_entries), service=service, country=country)
+        )
+
+# ========== COMMAND HANDLERS ==========
 async def my_number_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     number, service, country, expires = get_active_number(user_id)
@@ -864,6 +899,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_coupon_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_coupon_input))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_service_country_input))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file_upload))
 
     loop = asyncio.get_event_loop()
