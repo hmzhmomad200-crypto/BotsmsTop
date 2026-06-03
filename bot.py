@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram OTP Bot - with Change Number & Change Service buttons
+# Telegram OTP Bot - Change number automatically within same country & service
 
 import os
 import sqlite3
@@ -26,9 +26,11 @@ DB_FILE = "data/bot.db"
 NUMBER_EXPIRE_MINUTES = 10
 CAPTCHA_EXPIRE_MINUTES = 5
 
-# ========== DATABASE FUNCTIONS (unchanged, included in full version) ==========
-# ... (جميع دوال قاعدة البيانات كما هي سابقًا، لضمان الطول سأضعها مختصرة هنا، ولكن في الملف النهائي ستكون كاملة)
+# ========== LOGGING ==========
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+# ========== DATABASE FUNCTIONS (unchanged) ==========
 def init_db():
     os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
@@ -256,7 +258,7 @@ def fetch_otp_for_number(target_phone):
         logger.error(f"Scraper error: {e}")
         return None
 
-# Translations (shortened for readability)
+# ========== TRANSLATIONS (short) ==========
 texts = {
     'ar': {
         'number_assigned': "✅ تم اختيار الرقم!\n\n🌍 {country}\n📱 {service}\n📞 `{number}`\n\n⏳ ينتهي خلال {minutes} دقيقة",
@@ -425,7 +427,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_active_number(user_id, selected, service, country)
         remove_number_from_file(selected)
         add_used_number_temp(selected, hours=24)
-        # Display assigned number with change buttons
         await query.edit_message_text(
             get_text(user_id, 'number_assigned', country=country, service=service, number=selected, minutes=NUMBER_EXPIRE_MINUTES),
             parse_mode='Markdown',
@@ -436,20 +437,53 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("change_num_"):
-        # تغيير الرقم: تحرير الرقم الحالي ثم عرض قائمة الدول
+        # تغيير الرقم تلقائياً لنفس الدولة والخدمة
+        old_number, service, country, expires = get_active_number(user_id)
+        if not old_number:
+            await query.edit_message_text("⚠️ ليس لديك رقم نشط لتغييره.")
+            return
+        # تحرير الرقم الحالي
         clear_active_number(user_id)
+        # البحث عن رقم جديد
         numbers = load_numbers()
-        countries = {c for _, _, c in numbers}
-        keyboard = [[InlineKeyboardButton(c, callback_data=f"country_{c}")] for c in countries]
-        keyboard.append([InlineKeyboardButton("🔙", callback_data="main_menu")])
-        await query.edit_message_text(get_text(user_id, 'choose_country'), reply_markup=InlineKeyboardMarkup(keyboard))
+        used = set()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT number FROM active_numbers')
+        used.update(r[0] for r in c.fetchall())
+        c.execute('SELECT number FROM used_numbers_temp')
+        used.update(r[0] for r in c.fetchall())
+        conn.close()
+        new_number = None
+        for num, s, ctry in numbers:
+            if ctry == country and s == service and num not in used:
+                new_number = num
+                break
+        if new_number:
+            set_active_number(user_id, new_number, service, country)
+            remove_number_from_file(new_number)
+            add_used_number_temp(new_number, hours=24)
+            await query.edit_message_text(
+                get_text(user_id, 'number_assigned', country=country, service=service, number=new_number, minutes=NUMBER_EXPIRE_MINUTES),
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 تغيير الرقم", callback_data=f"change_num_{user_id}")],
+                    [InlineKeyboardButton("🔄 تغيير الخدمة", callback_data=f"change_svc_{country}_{service}_{user_id}")]
+                ])
+            )
+        else:
+            await query.edit_message_text(
+                f"⚠️ لا توجد أرقام متاحة حالياً لـ {service} في {country}. يمكنك تغيير الخدمة أو الانتظار.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 تغيير الخدمة", callback_data=f"change_svc_{country}_{service}_{user_id}")],
+                    [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")]
+                ])
+            )
 
     elif data.startswith("change_svc_"):
-        # تغيير الخدمة مع الحفاظ على نفس الدولة
         parts = data.split('_')
-        # format: change_svc_{country}_{old_service}_{user_id}
         country = parts[2]
-        # old_service = parts[3]  (not needed)
+        old_service = parts[3]  # not needed but for clarity
         clear_active_number(user_id)
         numbers = load_numbers()
         services = {s for _, s, c in numbers if c == country}
@@ -522,10 +556,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "coupon":
         context.user_data['coupon_mode'] = True
-        await query.edit_message_text(
-            get_text(user_id, 'coupon_instruction'),
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="main_menu")]])
-        )
+        await query.edit_message_text(get_text(user_id, 'coupon_instruction'), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="main_menu")]]))
 
     elif data == "admin_panel" and is_admin(user_id):
         keyboard = [
@@ -707,7 +738,6 @@ async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def captcha_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Skip if any other mode is active
     if any(context.user_data.get(k) for k in ['waiting_for_service', 'waiting_for_country', 'coupon_mode', 'broadcast_mode', 'add_coupon_mode']):
         return
     if not is_captcha_solved(user_id):
@@ -850,7 +880,6 @@ async def otp_monitor(app: Application):
 
 # ========== MAIN ==========
 def main():
-    logging.basicConfig(level=logging.INFO)
     init_db()
     if not os.path.exists(NUMBERS_FILE):
         open(NUMBERS_FILE, 'a').close()
@@ -870,7 +899,6 @@ def main():
     app.add_handler(CommandHandler("export_data", export_data_command))
 
     app.add_handler(CallbackQueryHandler(button_callback))
-    # Order matters: service/country first, then coupon, broadcast, coupon add, file, then captcha
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_service_country_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_coupon_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast_input))
