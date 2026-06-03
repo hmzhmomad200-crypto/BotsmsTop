@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram OTP Bot - Upload numbers file (just numbers), then choose service & country once
+# Telegram OTP Bot - Fixed handler order (captcha last)
 
 import os
 import sqlite3
@@ -30,7 +30,7 @@ CAPTCHA_EXPIRE_MINUTES = 5
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== DATABASE FUNCTIONS (unchanged) ==========
+# ========== DATABASE FUNCTIONS (unchanged, but included for completeness - same as previous) ==========
 def init_db():
     os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
@@ -288,7 +288,7 @@ def fetch_otp_for_number(target_phone):
         logger.error(f"Scraper error: {e}")
         return None
 
-# ========== TRANSLATIONS (shortened for brevity, but full) ==========
+# ========== TRANSLATIONS (short version) ==========
 texts = {
     'ar': {
         'start_captcha': "مرحباً! أدخل الكود خلال 5 دقائق:\n\n`{code}`",
@@ -389,7 +389,7 @@ def get_text(user_id, key, **kwargs):
     txt = texts.get(lang, texts['ar']).get(key, key)
     return txt.format(**kwargs) if kwargs else txt
 
-# ========== BOT HANDLERS ==========
+# ========== BOT HANDLERS (same as before) ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -417,23 +417,12 @@ async def show_main_menu(message, user_id):
         keyboard.append([InlineKeyboardButton("🔧 لوحة الأدمن", callback_data="admin_panel")])
     await message.reply_text(get_text(user_id, 'main_menu'), reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def captcha_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    code = update.message.text.strip()
-    if verify_captcha(user_id, code):
-        set_captcha_solved(user_id)
-        await update.message.reply_text(get_text(user_id, 'main_menu'))
-        await show_main_menu(update.message, user_id)
-    else:
-        await update.message.reply_text(get_text(user_id, 'wrong_captcha'))
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     data = query.data
 
-    # ========== USER ACTIONS ==========
     if data == "get_number":
         numbers = load_numbers()
         if not numbers:
@@ -549,7 +538,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="main_menu")]])
         )
 
-    # ========== ADMIN ACTIONS ==========
     elif data == "admin_panel" and is_admin(user_id):
         keyboard = [
             [InlineKeyboardButton(get_text(user_id, 'admin_stats'), callback_data="admin_stats")],
@@ -621,7 +609,46 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "main_menu":
         await show_main_menu(query.message, user_id)
 
-# ========== HANDLERS FOR TEXT INPUT ==========
+# ========== HANDLERS FOR TEXT INPUT - IMPORTANT: service/country handlers come FIRST ==========
+async def handle_service_country_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle service/country input after file upload - this must be before captcha handler"""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        return
+
+    text = update.message.text.strip()
+
+    if context.user_data.get('waiting_for_service'):
+        context.user_data['temp_service'] = text
+        context.user_data['waiting_for_service'] = False
+        context.user_data['waiting_for_country'] = True
+        await update.message.reply_text(
+            get_text(user_id, 'ask_country', service=text)
+        )
+        return True
+
+    elif context.user_data.get('waiting_for_country'):
+        service = context.user_data.get('temp_service')
+        country = text
+        numbers = context.user_data.get('uploaded_numbers', [])
+        current = load_numbers()
+        new_entries = []
+        for num in numbers:
+            new_entries.append([num, service, country])
+        current.extend(new_entries)
+        save_numbers(current)
+
+        # Clean up
+        context.user_data.pop('uploaded_numbers', None)
+        context.user_data.pop('temp_service', None)
+        context.user_data.pop('waiting_for_country', None)
+
+        await update.message.reply_text(
+            get_text(user_id, 'file_added', count=len(new_entries), service=service, country=country)
+        )
+        return True
+    return False
+
 async def handle_coupon_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if context.user_data.get('coupon_mode'):
@@ -641,6 +668,8 @@ async def handle_coupon_input(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await update.message.reply_text("✅ Coupon activated! You can now get a new number using /start.")
         else:
             await update.message.reply_text(get_text(user_id, 'coupon_invalid'))
+        return True
+    return False
 
 async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -660,6 +689,8 @@ async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_T
             except:
                 pass
         await update.message.reply_text(get_text(user_id, 'broadcast_done', count=sent))
+        return True
+    return False
 
 async def handle_add_coupon_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -668,17 +699,18 @@ async def handle_add_coupon_input(update: Update, context: ContextTypes.DEFAULT_
         context.user_data['add_coupon_mode'] = False
         if ',' not in text:
             await update.message.reply_text("❌ Invalid format. Use: code,uses")
-            return
+            return True
         code, uses_str = text.split(',', 1)
         try:
             uses = int(uses_str.strip())
         except:
             await update.message.reply_text("❌ Uses must be a number.")
-            return
+            return True
         add_coupon(code.strip(), uses)
         await update.message.reply_text(get_text(user_id, 'coupon_added', code=code, uses=uses))
+        return True
+    return False
 
-# ========== NEW: HANDLE SERVICE & COUNTRY AFTER FILE UPLOAD ==========
 async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -710,42 +742,22 @@ async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
         get_text(user_id, 'ask_service', count=len(numbers))
     )
 
-async def handle_service_country_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def captcha_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Only run captcha check if user is not in any other waiting mode"""
     user_id = update.effective_user.id
-    if not is_admin(user_id):
+    # Skip if user is in any other state (service, country, coupon, broadcast, etc.)
+    if any(context.user_data.get(k) for k in ['waiting_for_service', 'waiting_for_country', 'coupon_mode', 'broadcast_mode', 'add_coupon_mode']):
         return
+    # Only if captcha is pending
+    if not is_captcha_solved(user_id):
+        code = update.message.text.strip()
+        if verify_captcha(user_id, code):
+            set_captcha_solved(user_id)
+            await update.message.reply_text(get_text(user_id, 'main_menu'))
+            await show_main_menu(update.message, user_id)
+        else:
+            await update.message.reply_text(get_text(user_id, 'wrong_captcha'))
 
-    text = update.message.text.strip()
-
-    if context.user_data.get('waiting_for_service'):
-        context.user_data['temp_service'] = text
-        context.user_data['waiting_for_service'] = False
-        context.user_data['waiting_for_country'] = True
-        await update.message.reply_text(
-            get_text(user_id, 'ask_country', service=text)
-        )
-
-    elif context.user_data.get('waiting_for_country'):
-        service = context.user_data.get('temp_service')
-        country = text
-        numbers = context.user_data.get('uploaded_numbers', [])
-        current = load_numbers()
-        new_entries = []
-        for num in numbers:
-            new_entries.append([num, service, country])
-        current.extend(new_entries)
-        save_numbers(current)
-
-        # Clean up
-        context.user_data.pop('uploaded_numbers', None)
-        context.user_data.pop('temp_service', None)
-        context.user_data.pop('waiting_for_country', None)
-
-        await update.message.reply_text(
-            get_text(user_id, 'file_added', count=len(new_entries), service=service, country=country)
-        )
-
-# ========== COMMAND HANDLERS ==========
 async def my_number_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     number, service, country, expires = get_active_number(user_id)
@@ -895,12 +907,15 @@ def main():
     app.add_handler(CommandHandler("export_data", export_data_command))
 
     app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, captcha_handler))
+    
+    # IMPORTANT: Order matters. Service/country handler must come BEFORE captcha handler
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_service_country_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_coupon_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_coupon_input))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_service_country_input))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file_upload))
+    # Captcha handler LAST (only runs if no other handler consumed the message)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, captcha_handler))
 
     loop = asyncio.get_event_loop()
     loop.create_task(otp_monitor(app))
